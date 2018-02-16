@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <string.h>
 #include <unistd.h>
@@ -12,6 +13,7 @@
 #include "helpers.h"
 #include "posts.h"
 #include "config.h"
+#include "database.h"
 
 #define MAXPENDING 5
 #define DEFAULT_PORT 8080
@@ -21,6 +23,7 @@ static int sockfd = -1;
 static pthread_t db_thread;
 extern void *db_thread_main(void*);
 extern void handle(const int sockfd);
+struct db_thread_params *db_thread_params = NULL;
 
 // Database actions
 static void init_database() {
@@ -92,8 +95,12 @@ static void init_database() {
             global_id++;
     }
     
+    // Setup thread params
+    db_thread_params = malloc(sizeof(struct db_thread_params));
+    db_thread_params->curr_post_list = curr_post_list;
+    db_thread_params->should_save = 0;
     // Initialise the thread
-    if(pthread_create(&db_thread, NULL, db_thread_main, (void*)curr_post_list) < 0) {
+    if(pthread_create(&db_thread, NULL, db_thread_main, (void*)db_thread_params) < 0) {
         printf("Failed to load database thread!\n");
         post_list_destroy(curr_post_list);
         goto end;
@@ -151,7 +158,13 @@ int main(const int argc, const char *argv[]) {
         printf("Cannot open socket: %s\n", strerror(errno));
         exit(errno);
     }
-    if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0) {
+    struct timeval tv;
+    memset(&tv, 0, sizeof(struct timeval));
+    tv.tv_sec = TIMEOUT;
+    tv.tv_usec = 0;
+    if( setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) < 0 ||
+        setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int))    < 0
+    ) {
         printf("Cannot set socket opts: %s\n", strerror(errno));
         close(sockfd);
         exit(errno);
@@ -174,15 +187,34 @@ int main(const int argc, const char *argv[]) {
     printf("Listening on port %i\n", port);
     
     // Event loop
+    fd_set readfds;
+    
+    struct timeval select_timeout;
+    
     while(1) {
-        unsigned int clientlen = sizeof(client);
-        int clientfd;
-        if((clientfd = accept(sockfd, (struct sockaddr *)&client, &clientlen)) < 0) {
-            printf("Failed to accept client connection: %s\n", strerror(errno));
-            break;
-        }
-        printf("Client connected: %s\n", inet_ntoa(client.sin_addr));
-        handle(clientfd);
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
+        
+        tv.tv_sec = 0;
+        tv.tv_usec = 1000;
+        int activity = select(FD_SETSIZE, &readfds, NULL, NULL, &select_timeout);
+        
+        if (activity < 0 && errno != EINTR)
+            continue;
+    
+        if(FD_ISSET(sockfd, &readfds)) {
+            unsigned int clientlen = sizeof(client);
+            int clientfd;
+            if((clientfd = accept(sockfd, (struct sockaddr *)&client, &clientlen)) < 0) {
+                if(errno != MSG_DONTWAIT)
+                    printf("Failed to accept client connection: %s\n", strerror(errno));
+                continue;
+            }
+            printf("Client connected: %s\n", inet_ntoa(client.sin_addr));
+            handle(clientfd);
+         }
+         
+         usleep(LOOP_SLEEP);
     }
     
     // Fin

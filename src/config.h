@@ -4,6 +4,11 @@
 // Name of the site (will be used in title/header)
 #define SITE_NAME "/c/chan"
 
+// Name of the board software. Build scripts append commit hash.
+#ifndef FOOTER_VERSION
+#define FOOTER_VERSION "textboard"
+#endif
+
 // Database
 // Where the database will be located relative to the server binary
 #define DATABASE_FILE "database.csv"
@@ -25,3 +30,7 @@
 #define BUFFSIZE 1024
 // Length of string containing the HTTP header Date.
 #define TIME_LENGTH 40
+// Timeout in seconds for recv
+#define TIMEOUT 60
+// Time for event loop to sleep in milliseconds
+#define LOOP_SLEEP 1

@@ -27,6 +27,7 @@ tr td:first-child {
 }
 .id {
     color: #666666;
+    text-decoration: underline;
 }
 .reply {
     margin-left:10px;

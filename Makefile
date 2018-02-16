@@ -1,7 +1,8 @@
+VERSION := Commit\ $(shell git show -s --format=%h)
 ifeq ($(PRODUCTION), 1)
-    CFLAGS=-lm -lpthread -Wall -O1 -DPRODUCTION
+    CFLAGS=-lm -lpthread -Wall -O1 -DPRODUCTION -DFOOTER_VERSION=\"$(VERSION)\"
 else
-    CFLAGS=-lm -lpthread -Wall -g -O0
+    CFLAGS=-lm -lpthread -Wall -g -O0 -DFOOTER_VERSION=\"$(VERSION)\"
 endif
 SOURCES=src/server.c src/posts.c src/helpers.c src/handler.c src/database.c
 .PHONY: server src/static_files.h $(SOURCES)

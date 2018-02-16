@@ -2,11 +2,13 @@
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 #include "posts.h"
 #include "helpers.h"
 #include "static.h"
 #include "config.h"
+#include "database.h"
 
 #define RENDER_POST(x, length, element) \
     char time_utc[TIME_LENGTH]; \
@@ -29,6 +31,8 @@
      digits(post->replies->length) + 2 + \
      TIME_LENGTH * 2)
 
+extern struct db_thread_params *db_thread_params;
+
 // Post list
 struct post_list *post_list_create() {
     struct post_list *list = malloc(sizeof(struct post_list));
@@ -36,7 +40,6 @@ struct post_list *post_list_create() {
     list->first = NULL;
     list->last = NULL;
     list->length = 0;
-    list->should_save = 0;
     return list;
 }
 
@@ -191,6 +194,11 @@ void post_list_debug(struct post_list *list) {
 
 // Post
 struct post *post_create(unsigned int id, const char *author, const char *subject, const char *comment, time_t created_time, struct post *parent) {
+    if(db_thread_params != NULL && pthread_rwlock_wrlock(&db_thread_params->dblock) < 0) {
+        printf("Unable to acquire rwlock: %s\n", strerror(errno));
+        return NULL;
+    }
+    
     struct post *post = malloc(sizeof(struct post));
     if(post == NULL) return NULL;
     if(id == (unsigned int)-1) {
@@ -231,8 +239,17 @@ struct post *post_create(unsigned int id, const char *author, const char *subjec
         post_list_bump(curr_post_list, parent);
     }
     
-    curr_post_list->should_save = 1;
+    if(db_thread_params != NULL)
+        db_thread_params->should_save = 1;
+        
     post_debug(post);
+    
+    if(db_thread_params != NULL && pthread_rwlock_unlock(&db_thread_params->dblock) < 0) {
+        printf("Unable to release rwlock: %s\n", strerror(errno));
+        free(post);
+        return NULL;
+    }
+    
     return post;
 }
 

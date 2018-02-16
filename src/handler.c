@@ -8,15 +8,17 @@
 #include "static.h"
 #include "posts.h"
 
+#define sendstr(sockfd,str) send(sockfd,str,strlen(str), 0)
+
 // need this header for *gasps* ie6 compatibility
 #define CNT_TEXT_HEADER "Content-Type: text/plain\n"
 
 // Handler
 void handle(const int sockfd) {
-    char buffer[BUFFSIZE];
-    memset(buffer, 0, BUFFSIZE);
+    char buffer[BUFFSIZE+1];
+    memset(buffer, 0, BUFFSIZE+1);
     int received = -1;
-    if ((received = recv(sockfd, buffer, BUFFSIZE-1, 0)) < 0) {
+    if ((received = recv(sockfd, buffer, BUFFSIZE, 0)) < 0) {
         printf("Failed to receive\n");
         close(sockfd);
         return;
@@ -25,28 +27,18 @@ void handle(const int sockfd) {
     printf("---\n%s\n:::\n", buffer);
     #endif
     
-    // copy body
-    char *body = NULL;
-    for(size_t i = 0; i < strlen(buffer); i++) {
-        const char
-            c1 = buffer[i],
-            c2 = i+1<strlen(buffer) ? buffer[i+1] : 0,
-            c3 = i+2<strlen(buffer) ? buffer[i+2] : 0,
-            c4 = i+3<strlen(buffer) ? buffer[i+3] : 0;
-        if(c1 == '\r' && c2 == '\n' && c3 == '\r' && c4 == '\n') {
-            size_t length = strlen(buffer) - i - 4;
-            body = malloc(length + 1);
-            strncpy(body, buffer+i+4, length);
-            body[length] = 0;
-            break;
-        }
-    }
+    char *_buffer = clone_str(buffer);
     
     // parse headers
     // initial line
     char *_saveptr;
     const char *method = strtok_r(buffer, " ", &_saveptr);
     const char *path = strtok_r(NULL, " ", &_saveptr);
+    if(method == NULL || path == NULL) {
+        free(_buffer);
+        close(sockfd);
+        return;
+    }
     strtok_r(NULL, "\n", &_saveptr); // skip rest of initial line
     // header lines
     int content_length = -1;
@@ -59,11 +51,70 @@ void handle(const int sockfd) {
         char *_saveptr1;
         const char *key = strtok_r(_line, ":", &_saveptr1);
         const char *value = _line + strlen(key) + 2; // skip : and space
+        if(key == NULL || value == NULL) {
+            free(_line);
+            break;
+        }
         
         if(streq(key, "Content-Length"))
             content_length = atoi(value);
         
         free(_line);
+    }
+
+    // copy body
+    char *body = NULL;
+    for(size_t i = 0; i < strlen(_buffer); i++) {
+        const char
+            c1 = _buffer[i],
+            c2 = i+1<strlen(_buffer) ? _buffer[i+1] : 0,
+            c3 = i+2<strlen(_buffer) ? _buffer[i+2] : 0,
+            c4 = i+3<strlen(_buffer) ? _buffer[i+3] : 0;
+        if(c1 == '\r' && c2 == '\n' && c3 == '\r' && c4 == '\n') {
+            size_t length = strlen(_buffer) - i - 4;
+            body = malloc(length + 1);
+            strncpy(body, _buffer+i+4, length);
+            body[length] = 0;
+            break;
+        }
+    }
+    free(_buffer);
+    
+    if(body != NULL) {
+        if(content_length <= strlen(body)) // prevents overflow
+            body[content_length] = 0;
+        else if (content_length > -1) {
+            char cont[BUFFSIZE+1];
+            memset(cont, 0, BUFFSIZE+1);
+            int total_received = strlen(body);
+            while(total_received < content_length) {
+                if((received = recv(sockfd, cont, max(content_length - total_received, BUFFSIZE), 0)) < 0) {
+                    break;
+                } else {
+                    #ifndef PRODUCTION
+                    printf("%s\n",cont);
+                    #endif
+                    total_received += received;
+                    size_t max_size;
+                    if(total_received > content_length) {
+                        max_size = content_length - strlen(body);
+                        body = realloc(body, content_length+1);
+                        if(body == NULL) goto end;
+                        strncat(body, cont, max_size);
+                        body[content_length] = 0;
+                    } else {
+                        max_size = total_received - strlen(body);
+                        body = realloc(body, total_received+1);
+                        if(body == NULL) goto end;
+                        strncat(body, cont, max_size);
+                        body[total_received] = 0;
+                    }
+                }
+            }
+            #ifndef PRODUCTION
+            printf("%s\n",body);
+            #endif
+        }
     }
 
     #define DATE_HEADER_LINE \
@@ -75,7 +126,7 @@ void handle(const int sockfd) {
         type left = malloc(length); \
         if(left == NULL) { \
             sendstr(sockfd, \
-"HTTP/1.1 200 OK\n" \
+"HTTP/1.0 200 OK\n" \
 CNT_TEXT_HEADER \
 "\n" \
 "malloc failed (check stdout)"); \
@@ -93,54 +144,45 @@ CNT_TEXT_HEADER \
         char *html = post_list_render(curr_post_list, 0);
         
         const size_t length =
-            strlen(RESPONSE_HEADER) + // HTML/1.1 (...)
-            digits( // Content-Length: ??
-                strlen(INDEX_FILE_HEADER) +
-                (html == NULL ? 0 : strlen(html)) +
-                strlen(FOOTER_FILE)
-            ) +
-            1 + // '\n'
-            strlen(date) + // Date: [date]
-            2 + // '\n\n'
-            strlen(INDEX_FILE_HEADER) + // index file
-            (html == NULL ? 0 : strlen(html)) + // posts
+            strlen(INDEX_FILE_HEADER) +
+            (html == NULL ? 0 : strlen(html)) +
             strlen(FOOTER_FILE) +
-            2; // '\0'
+            strlen(FOOTER_VERSION);
+        char length_str[32];
+        snprintf(length_str, 32, "Content-Length: %li\n", length);
+            
+        sendstr(sockfd,
+            "HTTP/1.1 200 OK\n"
+            "Content-Type: text/html\n");
+        sendstr(sockfd, length_str);
+        sendstr(sockfd, date);
+        sendstr(sockfd, "\n\n");
         
-        malloc_or_fail(char *, response, length, {
-            if(html != NULL)
-                free(html);
-        });
-        memset(response, 0, length);
-        snprintf(response, length,
-            RESPONSE_HEADER "%li\n%s\n\n" INDEX_FILE_HEADER "%s" FOOTER_FILE,
-            length,
-            date,
-            html == NULL ? "" : html);
-        #ifndef PRODUCTION
-        printf("RESPONSE\n%s", response);
-        #endif
-        
-        sendstr(sockfd, response);
-        
-        if(html != NULL)
+        sendstr(sockfd, INDEX_FILE_HEADER);
+        if(html != NULL) {
+            sendstr(sockfd, html);
             free(html);
-        free(response);
+        }
+        
+        char *footer = malloc(strlen(FOOTER_FILE)+strlen(FOOTER_VERSION));
+        snprintf(footer, strlen(FOOTER_FILE)+strlen(FOOTER_VERSION), FOOTER_FILE, FOOTER_VERSION);
+        sendstr(sockfd, footer);
+        free(footer);
     }
     // GET /post
-    else if(streq(method, "GET") && streq(path, "/post")) {
+    else if(streq(method, "GET") && (streq(path, "/post") || streq(path, "/post/"))) {
         sendstr(sockfd,
-"HTTP/1.1 200 OK\n"
+"HTTP/1.0 200 OK\n"
 "Content-Type: text/html\n"
 "\n"
 "<h1>Usage:</h1>\n"
-"<p>POST /post HTTP/1.1</p>"
+"<p>POST /post HTTP/1.0</p>"
 "<p>with content: name=[name]&subject=[subject]&comment=[comment]</p>");
     }
     // GET /post/*
     else if(streq(method, "GET") && startswith(path, "/post/")) {
-        
         const char *post_id_str = strrchr(path, '/')+1;
+        
         const unsigned int post_id = (unsigned int)strtol(post_id_str, NULL, 10);
         struct post *post;
         
@@ -149,53 +191,44 @@ CNT_TEXT_HEADER \
             char *html = post_render(post);
             char *replies_html = post_list_render(post->replies, 1);
             
-            DATE_HEADER_LINE
-        
+            char *footer = malloc(strlen(FOOTER_FILE)+strlen(FOOTER_VERSION));
+            snprintf(footer, strlen(FOOTER_FILE)+strlen(FOOTER_VERSION), FOOTER_FILE, FOOTER_VERSION);
+            
+            char *header = malloc(strlen(REPLY_FILE_HEADER)+digits(post_id)+1);
+            snprintf(header, strlen(REPLY_FILE_HEADER)+digits(post_id)+1, REPLY_FILE_HEADER, post_id);
+            
             const size_t length =
-                strlen(RESPONSE_HEADER) + // HTML/1.1 (...)
-                digits( // Content-Length: ??
-                    strlen(INDEX_FILE_HEADER) +
-                    strlen(html) +
-                    (replies_html == NULL ? 0 : strlen(replies_html)) +
-                    strlen(FOOTER_FILE)
-                ) +
-                1 + // \n
-                strlen(date) + // Date: [date]
-                2 + // '\n\n'
-                strlen(REPLY_FILE_HEADER) + // index file
-                strlen(post_id_str) + // for form action
-                strlen(html) + // post
+                strlen(header) +
+                strlen(html) +
                 (replies_html == NULL ? 0 : strlen(replies_html)) +
-                strlen(FOOTER_FILE) +
-                2; // '\0'
-        
-            malloc_or_fail(char *, response, length, {
+                strlen(footer);
+            char length_str[32];
+            snprintf(length_str, 32, "Content-Length: %li\n", length);
+            
+            DATE_HEADER_LINE
+            
+            sendstr(sockfd,
+                "HTTP/1.1 200 OK\n"
+                "Content-Type: text/html\n");
+            sendstr(sockfd, length_str);
+            sendstr(sockfd, date);
+            sendstr(sockfd, "\n\n");
+            
+            sendstr(sockfd, header);
+            if(html != NULL) {
+                sendstr(sockfd, html);
                 free(html);
-                if(replies_html != NULL)
-                   free(replies_html);
-            });
-            memset(response, 0, length);
-            snprintf(response, length,
-                RESPONSE_HEADER "%li\n%s\n\n" REPLY_FILE_HEADER "%s%s" FOOTER_FILE,
-                length,
-                date,
-                post_id_str,
-                html,
-                (replies_html == NULL ? "" : replies_html));
-            #ifndef PRODUCTION
-            printf("RESPONSE\n%s", response);
-            #endif
-            
-            sendstr(sockfd, response);
-            
-            free(html);
-            if(replies_html != NULL)
+            }
+            if(replies_html != NULL) {
+                sendstr(sockfd, replies_html);
                 free(replies_html);
-            free(response);
+            }
             
+            sendstr(sockfd, footer);
+            free(footer);
         } else {
             sendstr(sockfd, 
-"HTTP/1.1 404 Not Found\n"
+"HTTP/1.0 404 Not Found\n"
 CNT_TEXT_HEADER
 "\n"
 "there is no post by this id! ;n;");
@@ -205,9 +238,6 @@ CNT_TEXT_HEADER
     // POST /post
     else if(streq(method, "POST") && streq(path, "/post")) {
         if(content_length > -1) {
-            if(content_length <= strlen(body)) // prevents overflow
-                body[content_length] = 0;
-            
             char *name = NULL;
             char *subject = NULL;
             char *comment = NULL;
@@ -259,7 +289,7 @@ CNT_TEXT_HEADER
             }
             if(comment == NULL) {
                 sendstr(sockfd, 
-"HTTP/1.1 200 OK\n"
+"HTTP/1.0 200 OK\n"
 CNT_TEXT_HEADER
 "\n"
 "there should be a comment field here! >_<");
@@ -267,7 +297,7 @@ CNT_TEXT_HEADER
                 goto end;
             } else if(!strlen(comment)) {
                 sendstr(sockfd,
-"HTTP/1.1 200 OK\n"
+"HTTP/1.0 200 OK\n"
 CNT_TEXT_HEADER
 "\n"
 "comment field shouldn't be empty! >~<");
@@ -290,7 +320,7 @@ CNT_TEXT_HEADER
                     post = post_create((unsigned int)-1, name, subject, comment, 0, parent);
                 } else {
                     sendstr(sockfd,
-"HTTP/1.1 404 Not Found\n"
+"HTTP/1.0 404 Not Found\n"
 CNT_TEXT_HEADER
 "\n"
 "there is no post by this id! ;n;");
@@ -305,13 +335,13 @@ CNT_TEXT_HEADER
             if(post == NULL) {
                 printf("ERROR! post is NULL!\n");
                 sendstr(sockfd, 
-"HTTP/1.1 200 OK\n"
+"HTTP/1.0 200 OK\n"
 CNT_TEXT_HEADER
 "\n"
 "post is NULL! send mail to sysadmin ;n;");
             } else {
                 sendstr(sockfd,
-"HTTP/1.1 200 OK\n"
+"HTTP/1.0 200 OK\n"
 "Content-Type: text/html\n"
 "\n"
 "<meta http-equiv=refresh content='1; url=/' />"
@@ -321,11 +351,31 @@ CNT_TEXT_HEADER
             
         } else {
             sendstr(sockfd,
-"HTTP/1.1 200 OK\n"
+"HTTP/1.0 404 Not Found\n"
 CNT_TEXT_HEADER
 "\n"
 "can't post without arguments! ;n;");
         }
+    }
+    // GET /style.css
+    else if(streq(method, "GET") && streq(path, "/style.css")) {
+        sendstr(sockfd,
+"HTTP/1.0 200 OK\n"
+"Content-type: text/css\n"
+"\n"
+CSS_FILE);
+    }
+    // 404 Not found otherwise
+    else {
+        char length_str[32];
+        snprintf(length_str, 32, "Content-Length: %li\n", strlen(NOT_FOUND));
+        
+        sendstr(sockfd,
+            "HTTP/1.1 200 OK\n"
+            "Content-Type: text/html\n");
+        sendstr(sockfd, length_str);
+        sendstr(sockfd, "\n\n");
+        sendstr(sockfd, NOT_FOUND);
     }
     
     printf("---\n");

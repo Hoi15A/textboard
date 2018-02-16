@@ -6,6 +6,7 @@
 
 #include "posts.h"
 #include "config.h"
+#include "database.h"
 
 void db_thread_save(FILE **db_file_ptr, struct post_list **curr_post_list_ptr, int save_headers) {
     FILE *db_file = *db_file_ptr;
@@ -42,31 +43,42 @@ void db_thread_save(FILE **db_file_ptr, struct post_list **curr_post_list_ptr, i
     fflush(db_file);
 }
 
-void *db_thread_main(void *curr_post_list_ptr) {
+void *db_thread_main(void *db_thread_params_ptr) {
     printf("Database thread loaded!\n");
     
-    FILE *db_file = fopen(DATABASE_FILE, "w+");
+    // Params
+    struct db_thread_params *params = db_thread_params_ptr;
+    struct post_list *curr_post_list = params->curr_post_list;
     
+    // Load file
+    FILE *db_file = fopen(DATABASE_FILE, "w+");
     if(db_file == NULL) {
         printf("Database init error: %s\n", strerror(errno));
         return NULL;
     }
     
-    struct post_list *curr_post_list = (struct post_list *)curr_post_list_ptr;
-    
+    // Poll for updates
     int header_saved = 0;
     while(1) {
-        // Save the database
-        if(!header_saved) {
-            fwrite(DATABASE_HEADER, 1, strlen(DATABASE_HEADER), db_file);
-            header_saved = 1;
-        }
+        if(pthread_rwlock_rdlock(&params->dblock) == 0) {
+            // Save the database
+            if(!header_saved) {
+                fwrite(DATABASE_HEADER, 1, strlen(DATABASE_HEADER), db_file);
+                header_saved = 1;
+            }
+            
+            if(params->should_save) {
+                db_thread_save(&db_file, &curr_post_list, !header_saved);
+                params->should_save = 0;
+                printf("Database saved.\n");
+            }
+            
+            if(pthread_rwlock_unlock(&params->dblock) < 0)
+                printf("Unable to release rwlock: %s\n", strerror(errno));
+        } else
+            printf("Unable to acquire rwlock: %s\n", strerror(errno));
         
-        if(curr_post_list->should_save) {
-            db_thread_save(&db_file, &curr_post_list, !header_saved);
-            curr_post_list->should_save = 0;
-            printf("Database saved.\n");
-        }
+        usleep(LOOP_SLEEP);
     }
     
     fclose(db_file);

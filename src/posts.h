@@ -5,7 +5,6 @@
 
 // Post list
 struct post_list {
-    unsigned int should_save;
     size_t length;
     struct post *first, *last;
 };

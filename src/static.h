@@ -15,10 +15,8 @@
 "<html>" \
 "<head>" \
     "<title>" SITE_NAME "</title>" \
-    "<meta charset=utf-8>" \
-    "<style>" \
-    CSS_FILE \
-    "</style>" \
+    "<meta charset='utf-8'>" \
+    "<link rel='stylesheet' href='/style.css'>" \
 "</head>" \
 "<body>"
 
@@ -49,6 +47,7 @@
     HEADER_FILE \
     "<center id='header'>" \
     "<h1><a href=/>" SITE_NAME "</a></h1>" \
+    HEADER_MESSAGES \
     FORM_TEMPLATE() \
     "</center>"
 
@@ -56,11 +55,12 @@
     HEADER_FILE \
     "<center id='header'>" \
     "<h1><a href=/>" SITE_NAME "</a></h1>" \
+    HEADER_MESSAGES \
     FORM_TEMPLATE(\
         "<tr>" \
             "<td colspan=2>" \
                 "<center>Replying to post..." \
-                "<input type=text readonly value='%s' size=3 name=reply_to style='display:none;'></center>" /* shitty html hack */ \
+                "<input type=text readonly value='%i' size=3 name=reply_to style='display:none;'></center>" /* shitty html hack */ \
             "</td>" \
         "</tr>") \
     "</center>"
